@@ -1,6 +1,6 @@
-# Script institucional UTN para activar OpenSSH Server en Windows
+# Script institucional UTN para activar OpenSSH Server en Windows (metodo MSI oficial)
 # Ejecutar en PowerShell como Administrador:
-#   powershell -ExecutionPolicy Bypass -File ".\activar_ssh_windows.ps1"
+#   irm https://raw.githubusercontent.com/Villegitas/ssh-active/main/activar_ssh_windows.ps1 | iex
 
 $esAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator
@@ -11,8 +11,12 @@ if (-not $esAdmin) {
 }
 
 if (-not (Get-Service -Name sshd -ErrorAction SilentlyContinue)) {
-    Write-Host "[1/4] Instalando OpenSSH Server (Microsoft.OpenSSH.Preview via winget)..." -ForegroundColor Cyan
-    winget install --id Microsoft.OpenSSH.Preview -e -s winget --accept-package-agreements --accept-source-agreements
+    Write-Host "[1/4] Descargando e instalando OpenSSH Server oficial (.msi)..." -ForegroundColor Cyan
+    $msi = "$env:TEMP\OpenSSH-Win64.msi"
+    $rel = Invoke-RestMethod "https://api.github.com/repos/PowerShell/Win32-OpenSSH/releases/latest"
+    $url = ($rel.assets | Where-Object { $_.name -like "OpenSSH-Win64*.msi" } | Select-Object -First 1).browser_download_url
+    Invoke-WebRequest -Uri $url -OutFile $msi -UseBasicParsing
+    Start-Process msiexec.exe -ArgumentList "/i", $msi, "/qn", "/norestart" -Wait
 } else {
     Write-Host "[1/4] OpenSSH Server ya se encuentra instalado." -ForegroundColor Green
 }
@@ -21,16 +25,17 @@ Write-Host "[2/4] Iniciando y habilitando servicio sshd..." -ForegroundColor Cya
 Start-Service sshd
 Set-Service -Name sshd -StartupType Automatic
 
-Write-Host "[3/4] Configurando regla de Firewall para puerto TCP 22..." -ForegroundColor Cyan
-if (-not (Get-NetFirewallRule -Name "OpenSSH-Server-In-TCP" -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -Name "OpenSSH-Server-In-TCP" `
-        -DisplayName "OpenSSH Server (sshd)" `
-        -Enabled True `
-        -Direction Inbound `
-        -Protocol TCP `
-        -Action Allow `
-        -LocalPort 22 | Out-Null
-}
+Write-Host "[3/4] Abriendo puerto TCP 22 en Firewall (todas las subredes/perfiles)..." -ForegroundColor Cyan
+Remove-NetFirewallRule -Name "UTN-OpenSSH-In-22" -ErrorAction SilentlyContinue
+New-NetFirewallRule -Name "UTN-OpenSSH-In-22" `
+    -DisplayName "UTN OpenSSH Server (TCP 22)" `
+    -Enabled True `
+    -Direction Inbound `
+    -Protocol TCP `
+    -Action Allow `
+    -LocalPort 22 `
+    -Profile Any `
+    -RemoteAddress Any | Out-Null
 
 try {
     Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow -ErrorAction Stop
@@ -38,6 +43,7 @@ try {
 
 Write-Host "`n[4/4] Verificacion final:" -ForegroundColor Green
 Get-Service sshd | Format-Table Status, Name, StartType -AutoSize
+Get-NetTCPConnection -LocalPort 22 -State Listen | Select-Object LocalAddress, LocalPort, State | Format-Table -AutoSize
 
 Write-Host "Usuario actual:" -ForegroundColor Cyan
 whoami
